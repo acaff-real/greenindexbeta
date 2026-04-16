@@ -7,7 +7,6 @@ import matplotlib.dates as mdates
 from datetime import datetime, timedelta
 import plotly.express as px
 
-
 GREEN_TICKERS_FULL = [
     "ACMESOLAR.NS", "ADANIGREEN.NS", "ALPEXSOLAR.NS", "BORORENEW.NS", 
     "EMMVEE.NS", "INOXWIND.NS", "KPIGREEN.NS", "NTPCGREEN.NS", 
@@ -30,7 +29,6 @@ BENCHMARK_TICKER = "^NSEI"
 
 st.set_page_config(page_title="Market Analyzer Pro", layout="wide")
 st.title("Market Analyzer Pro: Equity Terminal")
-
 
 def plot_weight_distribution(rich_stats_df, title):
     if rich_stats_df.empty: return None
@@ -57,7 +55,6 @@ def plot_weight_distribution(rich_stats_df, title):
     fig.update_traces(textposition='inside', textinfo='percent+label')
     return fig
 
-
 @st.cache_data 
 def fetch_fundamental_data(tickers):
     data = {}
@@ -77,14 +74,12 @@ def fetch_fundamental_data(tickers):
     df['shares'] = df['shares'].fillna(df['shares'].median())
     return df
 
-
 @st.cache_data(ttl=60)
 def calculate_weighted_index(tickers, start_date, end_date, shares_series):
     if not tickers: return None
     
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = (end_date + timedelta(days=1)).strftime('%Y-%m-%d')
-    
     
     raw_data = yf.download(tickers, start=start_str, end=end_str, threads=False, auto_adjust=False, progress=False)
     
@@ -124,7 +119,6 @@ def calculate_weighted_index(tickers, start_date, end_date, shares_series):
     index_series = (total_market_cap / base_value) * 100
     return index_series
 
-
 @st.cache_data(ttl=60)
 def fetch_rich_stats(tickers, end_date):
     if not tickers: return pd.DataFrame()
@@ -135,7 +129,6 @@ def fetch_rich_stats(tickers, end_date):
     data = yf.download(tickers, start=start_lookback, end=end_str, group_by='ticker', threads=False, auto_adjust=False, progress=False)
     
     stats = []
-    
     for ticker in tickers:
         try:
             if len(tickers) > 1:
@@ -215,9 +208,7 @@ def calculate_risk_metrics(series, name):
     max_drawdown = drawdown.min() * 100
     return {"Name": name, "Volatility (Ann.)": f"{volatility:.2f}%", "Max Drawdown": f"{max_drawdown:.2f}%"}
 
-
 st.sidebar.header("Configuration")
-
 
 with st.sidebar.form(key="config_form"):
     start_date = st.date_input("Start Date", value=datetime(2026, 1, 1))
@@ -225,6 +216,9 @@ with st.sidebar.form(key="config_form"):
 
     st.divider()
     st.subheader("🎛️ Index Filters")
+    
+    # NEW TOGGLE FOR THE ENTIRE STARTUP INDEX
+    show_startups = st.checkbox("Include Startup Index", value=True)
 
     selected_green = []
     with st.expander("🌱 Green Energy Constituents", expanded=False):
@@ -242,27 +236,31 @@ with st.sidebar.form(key="config_form"):
 
     submit_button = st.form_submit_button(label="Generate Dashboard")
 
-
 if "dashboard_generated" not in st.session_state:
     st.session_state.dashboard_generated = False
 
 if submit_button:
     st.session_state.dashboard_generated = True
 
-
-
 @st.fragment(run_every=60)
-def render_live_dashboard(start_date, end_date, selected_green, selected_startup):
+def render_live_dashboard(start_date, end_date, selected_green, selected_startup, show_startups):
     
     st.caption(f"🟢 Live View: Auto-refreshing every 60s. Last updated at {datetime.now().strftime('%H:%M:%S')}")
     
     if 'green_meta' not in st.session_state:
         st.session_state['green_meta'] = fetch_fundamental_data(GREEN_TICKERS_FULL)
-    if 'startup_meta' not in st.session_state:
-        st.session_state['startup_meta'] = fetch_fundamental_data(STARTUP_TICKERS_FULL)
-    
+        
     g_series = calculate_weighted_index(selected_green, start_date, end_date, st.session_state['green_meta']['shares'])
-    s_series = calculate_weighted_index(selected_startup, start_date, end_date, st.session_state['startup_meta']['shares'])
+    
+    # Conditionally process the Startup index based on the toggle
+    if show_startups:
+        if 'startup_meta' not in st.session_state:
+            st.session_state['startup_meta'] = fetch_fundamental_data(STARTUP_TICKERS_FULL)
+        s_series = calculate_weighted_index(selected_startup, start_date, end_date, st.session_state['startup_meta']['shares'])
+        s_rich_stats = fetch_rich_stats(selected_startup, end_date)
+    else:
+        s_series = None
+        s_rich_stats = pd.DataFrame()
     
     end_str = (end_date + timedelta(days=1)).strftime('%Y-%m-%d')
     nifty_data = yf.download(BENCHMARK_TICKER, start=start_date, end=end_str, threads=False, auto_adjust=False, progress=False)
@@ -277,11 +275,10 @@ def render_live_dashboard(start_date, end_date, selected_green, selected_startup
         n_series = None
 
     if g_series is None:
-        st.error("No data found. Please select at least one ticker.")
+        st.error("No data found for Green Energy. Please select at least one ticker.")
         return
 
     g_rich_stats = fetch_rich_stats(selected_green, end_date)
-    s_rich_stats = fetch_rich_stats(selected_startup, end_date)
 
     g_table = pd.DataFrame()
     s_table = pd.DataFrame()
@@ -289,34 +286,41 @@ def render_live_dashboard(start_date, end_date, selected_green, selected_startup
     if not g_rich_stats.empty:
         g_table = generate_full_report(g_rich_stats, st.session_state['green_meta'])
     
-    if not s_rich_stats.empty:
+    if show_startups and not s_rich_stats.empty:
         s_table = generate_full_report(s_rich_stats, st.session_state['startup_meta'])
 
-    
     g_final = g_series.iloc[-1]
     n_final = n_series.iloc[-1] if n_series is not None else 100
-    s_final = s_series.iloc[-1] if s_series is not None else 100
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Green Index", f"{g_final:.2f}", f"{(g_final-100):.2f}%")
-    col2.metric("NIFTY 50", f"{n_final:.2f}", f"{(n_final-100):.2f}%")
-    if s_series is not None:
-        col3.metric("Startup Index", f"{s_final:.2f}", f"{(s_final-100):.2f}%")
-
     
+    # Conditionally render top metric columns
+    if show_startups:
+        s_final = s_series.iloc[-1] if s_series is not None else 100
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Green Index", f"{g_final:.2f}", f"{(g_final-100):.2f}%")
+        col2.metric("NIFTY 50", f"{n_final:.2f}", f"{(n_final-100):.2f}%")
+        col3.metric("Startup Index", f"{s_final:.2f}", f"{(s_final-100):.2f}%")
+    else:
+        col1, col2 = st.columns(2)
+        col1.metric("Green Index", f"{g_final:.2f}", f"{(g_final-100):.2f}%")
+        col2.metric("NIFTY 50", f"{n_final:.2f}", f"{(n_final-100):.2f}%")
+
+    # Compile Chart Data
     chart_data = pd.DataFrame({"Green Energy": g_series})
-    if s_series is not None:
+    if show_startups and s_series is not None:
         chart_data["Startups"] = s_series
     if n_series is not None:
         chart_data["NIFTY 50"] = n_series
+
+    # FIX FOR LINE BREAKS: Forward-fill any NaN values caused by misaligned trading dates
+    chart_data = chart_data.ffill().bfill()
 
     fig_main = px.line(
         chart_data,
         labels={"value": "Index Score", "index": "Date", "variable": "Sector"},
         color_discrete_map={
-            "Green Energy": "
-            "Startups": "
-            "NIFTY 50": "
+            "Green Energy": "#00CC96",
+            "Startups": "#EF553B",
+            "NIFTY 50": "#7F7F7F"
         }
     )
     fig_main.add_hline(y=100, line_dash="dash", line_color="black", opacity=0.5)
@@ -331,31 +335,36 @@ def render_live_dashboard(start_date, end_date, selected_green, selected_startup
     
     st.divider()
 
-    
     st.subheader("⚖️ Index Composition & Concentration")
-    col_A, col_B = st.columns(2)
-
-    with col_A:
+    
+    # Conditionally render pie charts layout
+    if show_startups:
+        col_A, col_B = st.columns(2)
+        with col_A:
+            if not g_table.empty:
+                fig_g = plot_weight_distribution(g_table, "Green Index Weights")
+                if fig_g: st.plotly_chart(fig_g, use_container_width=True)
+        with col_B:
+            if not s_table.empty:
+                fig_s = plot_weight_distribution(s_table, "Startup Index Weights")
+                if fig_s: st.plotly_chart(fig_s, use_container_width=True)
+    else:
         if not g_table.empty:
             fig_g = plot_weight_distribution(g_table, "Green Index Weights")
             if fig_g: st.plotly_chart(fig_g, use_container_width=True)
-
-    with col_B:
-        if not s_table.empty:
-            fig_s = plot_weight_distribution(s_table, "Startup Index Weights")
-            if fig_s: st.plotly_chart(fig_s, use_container_width=True)
-    
     
     st.caption("Risk Metrics:")
     risk_data = [calculate_risk_metrics(g_series, "Green Energy"), calculate_risk_metrics(n_series, "NIFTY 50")]
-    if s_series is not None: risk_data.append(calculate_risk_metrics(s_series, "Startups"))
+    if show_startups and s_series is not None: 
+        risk_data.append(calculate_risk_metrics(s_series, "Startups"))
     st.table(pd.DataFrame(risk_data).set_index("Name"))
 
     st.divider()
 
-    
     st.subheader("📊 Comprehensive Market Data")
-    tab1, tab2 = st.tabs(["Green Energy", "Startups"])
+    
+    # Conditionally render tabs
+    tabs = st.tabs(["Green Energy", "Startups"] if show_startups else ["Green Energy"])
 
     col_config = {
         "LTP": st.column_config.NumberColumn("LTP", format="%.2f"),
@@ -370,24 +379,24 @@ def render_live_dashboard(start_date, end_date, selected_green, selected_startup
         "Mkt Cap (Cr)": st.column_config.NumberColumn("Mkt Cap (Cr)", format="%.0f"),
     }
 
-    with tab1:
+    with tabs[0]:
         if not g_table.empty:
             cols = ["Open", "High", "Low", "LTP", "Chng", "%Chng", "Volume", "Value (Cr)", "52W H", "52W L", "30D %Chng", "Weight (%)", "Mkt Cap (Cr)", "P/E"]
             cols = [c for c in cols if c in g_table.columns]
             st.dataframe(g_table[cols], column_config=col_config, use_container_width=True)
 
-    with tab2:
-        if not s_table.empty:
-            cols = ["Open", "High", "Low", "LTP", "Chng", "%Chng", "Volume", "Value (Cr)", "52W H", "52W L", "30D %Chng", "Weight (%)", "Mkt Cap (Cr)"]
-            cols = [c for c in cols if c in s_table.columns]
-            st.dataframe(s_table[cols], column_config=col_config, use_container_width=True)
-        else:
-            st.warning("No data available for Startups.")
+    if show_startups:
+        with tabs[1]:
+            if not s_table.empty:
+                cols = ["Open", "High", "Low", "LTP", "Chng", "%Chng", "Volume", "Value (Cr)", "52W H", "52W L", "30D %Chng", "Weight (%)", "Mkt Cap (Cr)"]
+                cols = [c for c in cols if c in s_table.columns]
+                st.dataframe(s_table[cols], column_config=col_config, use_container_width=True)
+            else:
+                st.warning("No data available for Startups.")
 
 
 if st.session_state.dashboard_generated:
     if start_date > end_date:
         st.error("Error: Start Date must be before End Date.")
     else:
-        
-        render_live_dashboard(start_date, end_date, selected_green, selected_startup)
+        render_live_dashboard(start_date, end_date, selected_green, selected_startup, show_startups)
